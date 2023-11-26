@@ -1,0 +1,282 @@
+---
+title: "# KNN and Tree Based Ensemble Models"
+author: "Chien-Lan Hsueh"
+date: "2022-07-04"
+output:
+  rmdformats::robobook: 
+    theme: cerulean
+    highlight: haddock
+    code_folding: none
+    df_print: paged
+  github_document:
+    toc: true
+    df_print: kable
+    html_preview: false
+    math_method: webtex
+  pdf_document:
+    latex_engine: xelatex
+    highlight: haddock
+    df_print: tibble
+  html_document:
+    toc: true
+    theme: cerulean
+    highlight: haddock
+    code_folding: none
+    df_print: paged
+---
+
+## Project Goal
+
+In this report, we conduct an exploratory data analysis (EDA) on the [Heart Failure Prediction Dataset](https://www.kaggle.com/datasets/fedesoriano/heart-failure-prediction). Then we fit KNN and ensemble models with repeated cross-validation on training data Test the models by finding the confusion matrix on the test data:
+
+- K-Nearest Neighbors (KNN)
+- Ensemble Models
+  - Classification Tree
+  - Bagged Tree
+  - Random Forests
+  - Generalized Boosted Regression Models
+
+## Set up: Packages and Helper Functions
+
+In this task, we will use the following packages:
+
+- `here`: enables easy file referencing and builds file paths in a OS-independent way
+- `stats`: loads this before loading `tidyverse` to avoid masking some `tidyverse` functions
+- `tidyverse`: includes collections of useful packages like `dplyr` (data manipulation), `tidyr` (tidying data),  `ggplots` (creating graphs), etc.
+- `glue`: embeds and evaluates R expressions into strings to be printed as messages
+- `scales`: formats and labels scales nicely for better visualization
+- `caret`: training and plotting classification and regression models
+- `rpart`: recursive partitioning for classification, regression and survival trees. 
+- `randomForest`: classification and regression based on a forest of trees using random inputs.
+- `gbm`: generalized boosted regression models
+
+```{r, include=FALSE}
+if (!require("pacman")) utils::install.packages("pacman", dependencies = TRUE)
+
+pacman::p_load(
+  here,
+  stats,
+  tidyverse,
+  glue,
+  skimr,
+  caret,
+  rpart, randomForest, gbm
+)
+```
+
+First, we define a helper functions to reduce repeating codes. This function trains models with cross validation to tune parameters and apply the best model on test set to see its performance.
+
+> Arguments:
+>
+> - `form`: formula
+> - `df_train`: training set
+> - `df_test`: test set
+> - `method`: classification or regression model to use
+> - `trControl`: a list of values that define how train acts
+> - `tuneGrid`: a data frame with possible tuning values
+> - `plot`: whether to plot parameter and metric
+> - `...`: arguments passed to the classification or regression routine
+>
+> Returned Value: a confusion matrix
+
+```{r}
+fit_model <- function(form, df_train, df_test, method, trControl, tuneGrid = NULL, plot = T, ...) {
+  # train model
+  fit <- train(
+    form = form,
+    data = df_train,
+    method = method,
+    preProcess = c("center", "scale"),
+    trControl = trControl,
+    tuneGrid = tuneGrid, ...)
+  
+  # print the best tune if there is a tuning parameter
+  if(is.null(tuneGrid)){
+    print("No tuning parameter")
+  } else {
+    # print the best tune 
+    print("The best tune is found with:")
+    print(glue("\t{names(fit$bestTune)} = {fit$bestTune[1,]}"))
+  
+    if(plot){
+      # get model info
+      model <- fit$modelInfo$label
+      parameter <- fit$modelInfo$parameters$parameter
+      description <- fit$modelInfo$parameters$label
+      
+      # plot parameter vs metrics
+      p <- fit$results %>% 
+        rename_at(1, ~"x") %>% 
+        pivot_longer(cols = -1, names_to = "Metric") %>% 
+        ggplot(aes(x, value, color = Metric)) +
+        geom_point() +
+        geom_line() +
+        facet_grid(rows = vars(Metric), scales = "free_y") +
+        labs(
+          title = glue("{model}: Hyperparameter Tuning"),
+          x = glue("{parameter} ({description})")
+        )
+      print(p)
+    }
+  }
+  
+  # make prediction on test set
+  pred <- predict(fit, newdata = df_test)
+
+  # confusion matrix
+  cfm <- confusionMatrix(df_test[,1] %>% as_vector(), pred)
+  
+  # print confusion matrix and accuracy
+  print("Confusion table:")
+  print(cfm$table)
+  print(glue("Accuracy = {cfm$overall['Accuracy']}"))
+
+  # return the confusion matrix
+  return(cfm)
+}
+```
+
+## Data
+
+The [Heart Failure Prediction Dataset](https://www.kaggle.com/datasets/fedesoriano/heart-failure-prediction) gives information about whether or not someone has heart disease along with different measurements about that person’s health. A local copy is saved in the `data` folder. Since the original column names contain space and special characters, and are long as well, we rename the columns when we read the data in.
+
+```{r}
+df_raw <- read_csv(here("data", "heart.csv"))
+ 
+# show the raw data
+df_raw
+
+# check structure
+str(df_raw)
+
+# check if any missing values
+anyNA(df_raw)
+```
+
+Next, we will prepare the data:
+
+- remove `ST_Slope`
+- convert the three categorical predictors `Sex`, `ChestPainType` and `RestingECG` to factors
+- convert the response `HeartDisease` to a factor and relocate it to the first column
+
+```{r}
+df <- df_raw %>% 
+  select(-ST_Slope) %>% 
+  mutate(
+    Sex = factor(Sex),
+    ChestPainType = factor(ChestPainType),
+    RestingECG = factor(RestingECG ),
+    ExerciseAngina = factor(ExerciseAngina),
+    HeartDisease = if_else(HeartDisease == 1, "Heart Disease", "Normal") %>% factor()
+  ) %>% 
+  relocate(HeartDisease)
+
+# show the data frame
+df
+
+# quick summaries of numeric and categorical variables
+skim(df)
+```
+
+## Split the Data
+
+We will use `caret::createDataPartition()` to create a 80/20 split of training and test sets.
+
+```{r}
+set.seed(2022)
+
+# split data
+trainIndex <- createDataPartition(df$HeartDisease, p = 0.8, list = FALSE)
+df_train <- df[trainIndex, ]
+df_test <- df[-trainIndex, ]
+```
+
+## Part 1: kNN
+
+To use kNN, we will need to encode the categorical predictors.
+
+```{r, warning=FALSE}
+# one-hot encode
+dummies_model <- dummyVars(HeartDisease ~ ., data = df)
+df_encoded <- bind_cols(df[, 1], predict(dummies_model, newdata = df))
+
+# show the encoded data frame
+df_encoded
+
+# do the same split pattern for training and test sets
+df_encoded_train <- df_encoded[trainIndex, ]
+df_encoded_test <- df_encoded[-trainIndex, ]
+```
+
+Train a kNN model on the standardize data (centered and scaled) using repeated cross validation (10 folds, 3 repeats) to determine the best parameter $k = {1, 2,... , 40}$. 
+
+```{r}
+# train a kNN model with cv and apply the best model on test set
+cfm_knn <- fit_model(
+  HeartDisease ~ ., df_encoded_train, df_encoded_test, "knn", 
+  trControl = trainControl(method = "repeatedcv", number = 10, repeats = 3),
+  tuneGrid = expand.grid(k = 1:40))
+```
+
+## Part 2: Ensemble
+
+Train a classification tree model on the standardize data (centered and scaled) using repeated cross validation (5 folds, 3 repeats) to determine the best parameter $\text{cp} = {0, 0.001, 0.002,... ,0.100}$.
+
+```{r}
+# train a classification tree model with cv and apply the best model on test set
+cfm_tree <- fit_model(
+  HeartDisease ~ ., df_train, df_test, "rpart", 
+  trControl = trainControl(method = "repeatedcv", number = 5, repeats = 3),
+  tuneGrid = expand.grid(cp = (1:100)/1000))
+```
+
+Train a bagged tree model on the standardize data (centered and scaled) using repeated cross validation (5 folds, 3 repeats).
+
+```{r}
+# train a bagged tree model with cv and apply the best model on test set
+cfm_bag <- fit_model(
+  HeartDisease ~ ., df_train, df_test, "treebag", 
+  trControl = trainControl(method = "repeatedcv", number = 5, repeats = 3), plot = FALSE)
+```
+
+Train a random forest model on the standardize data (centered and scaled) using repeated cross validation (5 folds, 3 repeats) to determine the best parameter $\text{mtry} = {1, 2, ..., 15}$.
+
+```{r}
+# train a random forest model with cv and apply the best model on test set
+cfm_rf <- fit_model(
+  HeartDisease ~ ., df_train, df_test, "rf", 
+  trControl = trainControl(method = "repeatedcv", number = 5, repeats = 3),
+  tuneGrid = expand.grid(mtry = 1:15))
+```
+
+Train a boosted tree model on the standardize data (centered and scaled) using repeated cross validation (5 folds, 3 repeats) to determine the best parameters $\text{n.trees} = {25, 50, ..., 200}$, $\text{interaction.depth} = {1, 2, 3, 4}$, $\text{shrinkage} = 0.1$ and $\text{nminobsinnode} = 10$.
+
+```{r}
+# train a boosted tree model with cv and apply the best model on test set
+cfm_boost <- fit_model(
+  HeartDisease ~ ., df_train, df_test, "gbm", 
+  trControl = trainControl(method = "repeatedcv", number = 5, repeats = 3),
+  tuneGrid = expand.grid(
+    n.trees = seq(25, 200, 25),
+    interaction.depth = 1:4,
+    shrinkage = 0.1,
+    n.minobsinnode =10),
+  plot = FALSE, verbose = FALSE)
+```
+
+## Comparison
+
+```{r}
+tibble(
+    kNN = cfm_knn$overall, 
+    Tree = cfm_tree$overall,
+    Bagged = cfm_bag$overall,
+    RandomForest = cfm_rf$overall,
+    Boosted = cfm_boost$overall
+  ) %>% 
+  mutate_all(round, 4) %>% 
+  bind_cols(Metric = names(cfm_knn$overall)) %>% 
+  relocate(Metric)
+```
+
+
