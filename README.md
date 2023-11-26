@@ -9,6 +9,7 @@ Key features:
 - Exploratory Data Analysis (EDA)
 - Test/Train Data Split
 - Cross Validation
+- Hyperparameter Tuning
 - K-Nearest Neighbors (KNN)
 - Classification Tree
 - Bagged Tree

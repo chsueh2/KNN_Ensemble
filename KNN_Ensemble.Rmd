@@ -3,16 +3,16 @@ title: "# KNN and Tree Based Ensemble Models"
 author: "Chien-Lan Hsueh"
 date: "2022-07-04"
 output:
-  rmdformats::robobook: 
-    theme: cerulean
-    highlight: haddock
-    code_folding: none
-    df_print: paged
   github_document:
     toc: true
     df_print: kable
     html_preview: false
     math_method: webtex
+  rmdformats::robobook: 
+    theme: cerulean
+    highlight: haddock
+    code_folding: none
+    df_print: paged
   pdf_document:
     latex_engine: xelatex
     highlight: haddock
